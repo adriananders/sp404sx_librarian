@@ -1,6 +1,7 @@
 #!/usr/bin/python
 import aifc, array, chunk, datetime, logging, math, os, os.path
 import struct, sys, tempfile, wave, xml.dom.minidom
+from io import IOBase
 
 class SfChunkReader(chunk.Chunk):
     Item = 0
@@ -182,19 +183,18 @@ class SfZoneType:
             raise ValueError
 
 def PrintUsage():
-    print """
-pysf version """ + str(PysfVersion) + """
-
-
-Usage: pysf [conversion] [infile] [outfile]
-    conversion := --sf2xml | --xml2sf
-    conversion := --aif2xml | --xml2aif
-    conversion := --wav2xml | --xml2wav
-"""
+    print("""
+          pysf version """ +
+          str(PysfVersion) +
+          """Usage: pysf [conversion] [infile] [outfile]
+                conversion := --sf2xml | --xml2sf
+                conversion := --aif2xml | --xml2aif
+                conversion := --wav2xml | --xml2wav
+           """)
     sys.exit(0)
 
 def ustr(Arg):
-    return unicode(str(Arg), 'utf-8')
+    return str(str(Arg).encode('utf-8'))
 
 def LogDie(Msg):
     logging.error(Msg)
@@ -219,13 +219,13 @@ def Val(Dict, Key):
     return Retval
 
 def ListHas(List, Item):
-    return len(filter(lambda x: x == Item, List)) > 0
+    return len(list(filter(lambda x: x == Item, List))) > 0
 
 def LdFind(List, Key, Value):
     Retval = None
     Results = filter(lambda x: x[Key] == Value, List)
-    if len(Results) > 0:
-        Retval = Results[0]
+    if len(list(Results)) > 0:
+        Retval = list(Results)[0]
     return Retval
 
 def DataSwap(DataString):
@@ -296,7 +296,7 @@ def DataCopy(         \
         WriteFunc = Dst.write
     while FramesLeft > 0:
         DataSize = min(FramesLeft, 1024)
-        DataString = ReadFunc(DataSize * SrcWidth)
+        DataString = ReadFunc(int(DataSize * SrcWidth))
         if Byteswap == True:
             DataString = DataSwap(DataString)
         if Channel == 0 or \
@@ -388,7 +388,7 @@ def XmlFileToDict(FileName):
 
 def LikeFile(Obj):
     Retval = False
-    if type(Obj) == file or                             \
+    if isinstance(Obj, IOBase) or                             \
         Obj.__class__ == tempfile._TemporaryFileWrapper \
     :
         Retval = True
@@ -405,21 +405,22 @@ def ListToIff(List, OutHandle):
         if type(Key) == list:
             Id = Key[0]
             Form = Key[1]
-            FormData = struct.pack('4s', Form)
+            FormData = struct.pack('4s', bytes(Form, "utf-8"))
         else:
             Id = Key
             Form = None
             FormData = ''
-        OutHandle.write(struct.pack('<4sI', Id, 0))
+        OutHandle.write(struct.pack('<4sI', bytes(Id, "utf-8"), 0))
         DataPos = OutHandle.tell()
-        OutHandle.write(FormData)
+        if FormData != '':
+            OutHandle.write(FormData)
         if LikeFile(Data):
             Data.seek(0, 2)
             FramesLeft = Data.tell() / 2
             Data.seek(0)
             DataCopy(Data, OutHandle, 2, FramesLeft, False)
             Data.close()
-        elif type(Data) == str:
+        elif type(Data) == bytes or type(Data) == bytearray:
             OutHandle.write(Data)
         elif type(Data) == list:
             ListToIff(Data, OutHandle)
@@ -510,7 +511,8 @@ def SfStr(Str, MaxLen = 256):
             Str = NewStr
             StrLen = MaxLen
         FmtStr = "%ds" % (StrLen)
-        Retval = struct.pack(FmtStr, str(Str))
+        Retval = struct.pack(FmtStr, bytes(str(Str), 'utf-8'))
+
     return Retval
 
 def SfWavetableList(Tree):
@@ -892,7 +894,7 @@ def StereoSampleCheck(Wavetables, Id, Channel, WSampleLink):
 
 def SfSdtaShdr(Dict):
     ShdrFmtStr = '<20sIIIIIBbHH'
-    ShdrD = ''
+    ShdrD = bytearray()
     SmplD = tempfile.TemporaryFile()
     Sm24D = tempfile.TemporaryFile()
     Id = -1
@@ -1015,9 +1017,13 @@ def SfSdtaShdr(Dict):
                 Order + 1,
                 Aud.getsampwidth() * 8
             ))
-        SmplD.write(struct.pack('92s', '')) # 46 sample Pad
+        SmplD.write(struct.pack('92s', bytes('', 'utf-8'))) # 46 sample Pad
         Aud.close()
-        ShdrD = ShdrD + struct.pack(
+        WtStart = int(WtStart)
+        WtEnd = int(WtEnd)
+        WtLoopstart = int(WtLoopstart)
+        WtLoopend = int(WtLoopend)
+        ShdrD.extend(struct.pack(
             ShdrFmtStr,
             WtName,
             WtStart,
@@ -1029,12 +1035,12 @@ def SfSdtaShdr(Dict):
             ChPitchCorrection,
             WSampleLink,
             SfSampleType
-        )
+        ))
         Order = Order + 1
-    WtName = 'EOS'
-    ShdrD = ShdrD + struct.pack(
+    WtName = bytes('EOS',"utf-8")
+    ShdrD.extend(struct.pack(
         ShdrFmtStr,
-        'EOS',
+        WtName,
         0,
         0,
         0,
@@ -1044,7 +1050,7 @@ def SfSdtaShdr(Dict):
         0,
         0,
         0
-    )
+    ))
     Shdr = ['shdr', ShdrD]
     if Major == 2 and \
         Minor >= 4    \
@@ -1102,10 +1108,10 @@ def SfZone(Dict, Zt):
     ModC = 0
     BagC = 0
     HdrC = 0
-    GenD = ''
+    GenD = bytearray()
     ModD = ''
-    BagD = ''
-    HdrD = ''
+    BagD = bytearray()
+    HdrD = bytearray()
 
     for InPr in Dict[Zt.KeyN + u's'][Zt.KeyN]:
         logging.info("reading %s %d" % (Zt.KeyN, Order + 1))
@@ -1114,8 +1120,8 @@ def SfZone(Dict, Zt):
             WBank = Def(Val(InPr, u'bank'), 0)
         ZoneIndex = 0
         if len(InPr[u'zones'][u'zone']) == 0:
-            GenD = GenD + struct.pack('<HH', 60, 0)
-            BagD = BagD + struct.pack('<HH', GenC, ModC)
+            GenD.extend(struct.pack('<HH', 60, 0))
+            BagD.extend(struct.pack('<HH', GenC, ModC))
             GenC = GenC + 1
             ModC = ModC + 1
         for Zone in InPr[u'zones'][u'zone']:
@@ -1140,12 +1146,12 @@ def SfZone(Dict, Zt):
                 KeyRangeEnd > -1      \
             :
                 IopsCount = IopsCount + 1
-                GenD = GenD + struct.pack(
+                GenD.extend(struct.pack(
                     '<HBB',
                     43,
                     KeyRangeBegin,
                     KeyRangeEnd
-                )
+                ))
             (
                 VelRangeBegin,
                 VelRangeEnd
@@ -1154,20 +1160,20 @@ def SfZone(Dict, Zt):
                 VelRangeEnd > -1      \
             :
                 IopsCount = IopsCount + 1
-                GenD = GenD + struct.pack(
+                GenD.extend(struct.pack(
                     '<HBB',
                     44,
                     VelRangeBegin,
                     VelRangeEnd
-                )
+                ))
             OverridingRootKey = Def(Val(Zone, u'overridingRootKey'), -1)
             if OverridingRootKey > -1:
                 IopsCount = IopsCount + 1
-                GenD = GenD + struct.pack('<HH', 58, OverridingRootKey)
+                GenD.extend(struct.pack('<HH', 58, OverridingRootKey))
             ExclusiveClass = Def(Val(Zone, u'exclusiveClass'), -1)
             if ExclusiveClass > -1:
                 IopsCount = IopsCount + 1
-                GenD = GenD + struct.pack('<HH', 57, ExclusiveClass)
+                GenD.extend(struct.pack('<HH', 57, ExclusiveClass))
             if Zt.KeyN == 'instrument':
                 try:
                     Wavetable = LdFind(
@@ -1197,59 +1203,59 @@ def SfZone(Dict, Zt):
                     ))
                     SampleModes = 0
                 IopsCount = IopsCount + 1
-                GenD = GenD + struct.pack('<Hh', 54, SampleModes)
+                GenD.extend(struct.pack('<Hh', 54, SampleModes))
             EnvDelay = SfLog(Zone, u'delayVolEnv', SHOOBVAL)
             if EnvDelay > SHOOBVAL:
                 IopsCount = IopsCount + 1
-                GenD = GenD + struct.pack('<Hh', 33, EnvDelay)
+                GenD.extend(struct.pack('<Hh', 33, EnvDelay))
             EnvAttack = SfLog(Zone, u'attackVolEnv', SHOOBVAL)
             if EnvAttack > SHOOBVAL:
                 IopsCount = IopsCount + 1
-                GenD = GenD + struct.pack('<Hh', 34, EnvAttack)
+                GenD.extend(struct.pack('<Hh', 34, EnvAttack))
             EnvHold = SfLog(Zone, u'holdVolEnv', SHOOBVAL)
             if EnvHold > SHOOBVAL:
                 IopsCount = IopsCount + 1
-                GenD = GenD + struct.pack('<Hh', 35, EnvHold)
+                GenD.extend(struct.pack('<Hh', 35, EnvHold))
             EnvDecay = SfLog(Zone, u'decayVolEnv', SHOOBVAL)
             if EnvDecay > SHOOBVAL:
                 IopsCount = IopsCount + 1
-                GenD = GenD + struct.pack('<Hh', 36, EnvDecay)
+                GenD.extend(struct.pack('<Hh', 36, EnvDecay))
             EnvSustain = Def(Val(Zone, u'sustainVolEnv'), SHOOBVAL)
             if EnvSustain > SHOOBVAL:
                 IopsCount = IopsCount + 1
-                GenD = GenD + struct.pack('<Hh', 37, EnvSustain)
+                GenD.extend(struct.pack('<Hh', 37, EnvSustain))
             EnvRelease = SfLog(Zone, u'releaseVolEnv', SHOOBVAL)
             if EnvRelease > SHOOBVAL:
                 IopsCount = IopsCount + 1
-                GenD = GenD + struct.pack('<Hh', 38, EnvRelease)
+                GenD.extend(struct.pack('<Hh', 38, EnvRelease))
             KtveHold = Def(Val(Zone, u'keynumToVolEnvHold'), SHOOBVAL)
             if KtveHold > SHOOBVAL:
                 IopsCount = IopsCount + 1
-                GenD = GenD + struct.pack('<Hh', 39, KtveHold)
+                GenD.extend(struct.pack('<Hh', 39, KtveHold))
             KtveDecay = Def(Val(Zone, u'keynumToVolEnvDecay'), SHOOBVAL)
             if KtveDecay > SHOOBVAL:
                 IopsCount = IopsCount + 1
-                GenD = GenD + struct.pack('<Hh', 40, KtveDecay)
+                GenD.extend(struct.pack('<Hh', 40, KtveDecay))
             try:
                 for Generator in Zone[u'gens'][u'gen']:
                     IopsCount = IopsCount + 1
-                    GenD = GenD + struct.pack(
+                    GenD.extend(struct.pack(
                         '<HH',
                         Generator[u'oper'],
                         Generator[u'hexAmount']
-                    )
+                    ))
             except KeyError:
                 pass
-            GenD = GenD + struct.pack('<HH', Zt.Oper, ItemRef)
-            BagD = BagD + struct.pack('<HH', GenC, ModC)
+            GenD.extend(struct.pack('<HH', Zt.Oper, ItemRef))
+            BagD.extend(struct.pack('<HH', GenC, ModC))
             GenC = GenC + IopsCount
             BagC = BagC + 1
             ZoneIndex = ZoneIndex + 1
         if Zt.KeyN == 'instrument':
-            HdrD = HdrD + struct.pack('<20sH', Name, LastNBag)
+            HdrD.extend(struct.pack('<20sH', Name, LastNBag))
         elif Zt.KeyN == 'preset':
             WPreset = HdrC
-            HdrD = HdrD + struct.pack(
+            HdrD.extend(struct.pack(
                 '<20sHHHIII',
                 Name,
                 WPreset,
@@ -1258,7 +1264,7 @@ def SfZone(Dict, Zt):
                 0,
                 0,
                 0
-            )
+            ))
         HdrC = HdrC + 1
         LastNBag = BagC
         Order = Order + 1
@@ -1291,14 +1297,16 @@ def SfPdta(Dict, Shdr):
         PbagC,
         PhdrC
     ) = SfZonePreset(Dict)
-    InstD = InstD + struct.pack('<20sH', 'EOI', IbagC)
-    IbagD = IbagD + struct.pack('<HH', IgenC, 0)
-    IgenD = IgenD + struct.pack('<HH', 0, 0)
-    ImodD = ImodD + struct.pack('<HHhHH', 0, 0, 0, 0, 0)
-    PbagD = PbagD + struct.pack('<HH', PgenC, PmodC)
-    PgenD = PgenD + struct.pack('<HH', 0, 0)
-    PmodD = PmodD + struct.pack('<HHhHH', 0, 0, 0, 0, 0)
-    PhdrD = PhdrD + struct.pack('<20sHHHIII', 'EOP', 0, 0, PbagC, 0, 0, 0)
+    ImodD = bytearray()
+    PmodD = bytearray()
+    InstD.extend(struct.pack('<20sH', bytes('EOI',"utf-8"), IbagC))
+    IbagD.extend(struct.pack('<HH', IgenC, 0))
+    IgenD.extend(struct.pack('<HH', 0, 0))
+    ImodD.extend(struct.pack('<HHhHH', 0, 0, 0, 0, 0))
+    PbagD.extend(struct.pack('<HH', PgenC, PmodC))
+    PgenD.extend(struct.pack('<HH', 0, 0))
+    PmodD.extend(struct.pack('<HHhHH', 0, 0, 0, 0, 0))
+    PhdrD.extend(struct.pack('<20sHHHIII', bytes('EOP',"utf-8"), 0, 0, PbagC, 0, 0, 0))
     Pdta = [
         ['LIST', 'pdta'],
         [
