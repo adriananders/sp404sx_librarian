@@ -14,10 +14,13 @@
 #  PTN_F1.mid
 #  PTN_F1.sf2
 
-import struct, binascii, sys, os, wave, os.path, shutil, pysf, argparse
+import struct, binascii, sys, os, wave, os.path, shutil, pysf, argparse, importlib
+import xml.etree.ElementTree as ET
 from collections import namedtuple
 from midiutil.MidiFile import MIDIFile
 from pydub import AudioSegment
+from datetime import datetime
+freepatstools = importlib.import_module("freepats-tools")
 
 
 parser = argparse.ArgumentParser(description="Parses a pattern from a Roland SP-404SX SD card and creates a MIDI file and SoundFont file.")
@@ -134,13 +137,16 @@ def create_midi_file(pads, notes, midi_tempo, path, pattern):
 
 	note_path_to_pitch = {}
 	next_available_pitch = 36 # for C1. see "midi note numbers" in http://www.sengpielaudio.com/calculator-notenames.htm
-
+	wave_table_list = []
+	path_list = []
 	time_in_beats_for_next_note = 0
 	for note in notes:
 		if note.pad != 128:
 
 			note_filename = notetuple_to_note_filename(note)
 			note_path = path + SAMPLE_DIRECTORY + note_filename
+			wave_table_list.append(note_filename)
+			path_list.append(note_path)
 			print("", "note_path:", note_path)
 			if note_path not in note_path_to_pitch:
 				note_path_to_pitch[note_path] = next_available_pitch
@@ -183,6 +189,7 @@ def create_midi_file(pads, notes, midi_tempo, path, pattern):
 	binfile = open("PTN_" + pattern.upper() + ".mid", 'wb')
 	midi_file.writeFile(binfile)
 	binfile.close()
+	return wave_table_list, path_list
 	# play it with "timidity output.mid" /etc/timidity/freepats.cfg
 	# see eg /usr/share/midi/freepats/Tone_000/004_Electric_Piano_1_Rhodes.pat
 
@@ -196,31 +203,84 @@ def trim_wav_by_frame_numbers(infile_path, outfile_path, start_frame, end_frame)
 	in_file.setpos(start_frame)
 	out_file.writeframes(in_file.readframes(out_length_frames))
 
-# via http://stackoverflow.com/questions/2890703/how-to-join-two-wav-file-using-python
-def create_looped_wav(): # in_filename, out_filename):
-	infiles = ["C0000006.WAV", "C0000006.WAV"]
-	outfile = "concat.wav"
-
-	data= []
-	for infile in infiles:
-	    w = wave.open(infile, 'rb')
-	    data.append( [w.getparams(), w.readframes(w.getnframes())] )
-	    w.close()
-
-	output = wave.open(outfile, 'wb')
-	output.setparams(data[0][0])
-	output.writeframes(data[0][1])
-	output.writeframes(data[1][1])
-	output.close()
-
 def stereo_to_mono(infile_path, outfile_path):
 	sound = AudioSegment.from_wav(infile_path)
 	sound = sound.set_channels(1)
 	sound.export(outfile_path, format="wav")
 
+def create_template(pattern, wave_table_list, path_list):
+	date = datetime.today().strftime('%Y-%m-%d')
+	curr_datetime = datetime.today().strftime('%Y-%m-%d-%H:%M:%S')
+	instrumentName = "SP-404SX Librarian " + curr_datetime + " PTN_" + pattern.upper()
+	begin_key = 36
+	end_key = begin_key + len(wave_table_list) - 1
+	key_value = begin_key
+	wave_table_id = 1
+	zones = []
+	wavetables = []
+	xml_data = ET.Element('sf:pysf')
+	xml_data.set('xmlns:sf', '.')
+	xml_data.set('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance')
+	xml_data.set('version', '3')
+	xml_data.set('xsi:schemaLocation', '.')
+	sf2 = ET.SubElement(xml_data, 'sf2')
+	ET.SubElement(sf2, 'ICRD').text = date
+	ifil = ET.SubElement(sf2, 'IFIL')
+	major = ET.SubElement(ifil, 'major')
+	minor = ET.SubElement(ifil, 'minor')
+	major.text = "2"
+	minor.text = "1"
+	ET.SubElement(sf2, 'INAM').text = "PySF"
+	ET.SubElement(sf2, 'IPRD').text = "SBAWE32"
+	ET.SubElement(sf2, 'ISFT').text = "PySF"
+	ET.SubElement(sf2, 'ISNG').text = "PySF"
+	instruments = ET.SubElement(sf2, 'instruments')
+	instrument = ET.SubElement(instruments, 'instrument')
+	ET.SubElement(instrument, 'id').text = "1"
+	ET.SubElement(instrument, 'name').text = instrumentName
+	instrument_zones = ET.SubElement(instrument, 'zones')
+	presets = ET.SubElement(sf2, 'presets')
+	preset = ET.SubElement(presets, 'preset')
+	ET.SubElement(preset, 'bank').text = "128"
+	ET.SubElement(preset, 'id').text = "1"
+	ET.SubElement(preset, 'name').text = instrumentName
+	preset_zones = ET.SubElement(preset, 'zones')
+	preset_zone = ET.SubElement(preset_zones, 'zone')
+	ET.SubElement(preset_zone, 'instrumentId').text = "1"
+	key_range = ET.SubElement(preset_zone, 'keyRange')
+	ET.SubElement(key_range, 'begin').text = str(begin_key)
+	ET.SubElement(key_range, 'end').text = str(end_key)
+	wave_tables = ET.SubElement(sf2, 'wavetables')
+
+	for wave_table in wave_table_list:
+		wave_table_name = wave_table.replace(".wav","").replace(".aiff","")
+
+		instrument_zone = ET.SubElement(instrument_zones, 'zone')
+		instrument_key_range = ET.SubElement(instrument_zone, 'keyRange')
+		
+		ET.SubElement(instrument_key_range, 'begin').text = str(key_value)
+		ET.SubElement(instrument_key_range, 'end').text = str(key_value)
+		ET.SubElement(instrument_zone, 'overridingRootKey').text = str(key_value)
+		ET.SubElement(instrument_zone, 'sampleModes').text = '0_LoopNone'
+		ET.SubElement(instrument_zone, 'wavetableId').text = str(wave_table_id)
+
+		wave_table_data = ET.SubElement(wave_tables, 'wavetable')
+		ET.SubElement(wave_table_data, 'file').text = path_list[wave_table_id - 1]
+		ET.SubElement(wave_table_data, 'id').text = str(wave_table_id)
+		loop = ET.SubElement(wave_table_data, 'loop')
+		ET.SubElement(loop, 'begin').text = "1"
+		ET.SubElement(loop, 'end').text = "1"
+		ET.SubElement(wave_table_data, 'name').text = wave_table_name
+		key_value = key_value + 1
+		wave_table_id = wave_table_id + 1
+
+
+	with open("/tmp/pysftemplate.xml", "w") as file:
+		file.write("<?xml version=\"1.0\" ?>" + ET.tostring(xml_data).decode("utf-8"))
+
+
 def create_soundfont_file(pattern):
-	# TODO: embed a useful name in the soundfont instead of "cola..." from hammersound
-	pysf.XmlToSf("template.xml", "PTN_" + pattern.upper() + ".sf2") # TODO: support up to 120 samples in the soundfont
+	pysf.XmlToSf("/tmp/pysftemplate.xml", "PTN_" + pattern.upper() + ".sf2")
 
 def parsepath(path):
 	if path[:-1] != "/":
@@ -245,10 +305,10 @@ if __name__ == "__main__":
 	midi_tempo = int(sys.argv[3])
 	path = parsepath(sys.argv[1])
 	pattern = sys.argv[2]
-	#create_looped_wav()
 	pads = get_pad_info(path)
 	notes = get_pattern(path, pattern)
-	create_midi_file(pads, notes, midi_tempo, path, pattern)
+	wave_table_list, path_list = create_midi_file(pads, notes, midi_tempo, path, pattern)
+	create_template(pattern, wave_table_list, path_list)
 	create_soundfont_file(pattern)
 	
 
